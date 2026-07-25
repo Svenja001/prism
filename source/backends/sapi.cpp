@@ -3,6 +3,7 @@
 #ifdef _WIN32
 #include "../backend.h"
 #include "../backend_catalog.h"
+#include "../logging.h"
 #include "../utils.h"
 #include <algorithm>
 #include <array>
@@ -149,6 +150,12 @@ private:
   mutable std::condition_variable init_cv;
   std::optional<bool> ready = std::nullopt;
   std::recursive_mutex voice_lock;
+  LogSource logger{"SAPI"};
+  static constexpr auto VOICE_CATEGORIES = std::to_array<LPCWSTR>({
+      SPCAT_VOICES,
+      _T("HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Speech ")
+      _T("Server\\v11.0\\Voices"),
+  });
 
   void thread_proc(const std::stop_token &st) {
     InitHandshake handshake{.m = init_mtx,
@@ -691,89 +698,94 @@ public:
 
   BackendResult<> refresh_voices() override {
     std::vector<VoiceInfo> new_voices;
-    CComPtr<ISpObjectTokenCategory> category;
-    HRESULT hr = category.CoCreateInstance(CLSID_SpObjectTokenCategory);
-    if (FAILED(hr))
-      return std::unexpected(BackendError::InternalBackendError);
-    hr = category->SetId(SPCAT_VOICES, FALSE);
-    if (FAILED(hr))
-      return std::unexpected(BackendError::InternalBackendError);
-    CComPtr<IEnumSpObjectTokens> enum_tokens;
-    hr = category->EnumTokens(nullptr, nullptr, &enum_tokens);
-    if (FAILED(hr))
-      return std::unexpected(BackendError::InternalBackendError);
-    ULONG count = 0;
-    hr = enum_tokens->GetCount(&count);
-    if (FAILED(hr))
-      return std::unexpected(BackendError::InternalBackendError);
-    new_voices.reserve(count);
-    for (ULONG i = 0; i < count; ++i) {
-      CComPtr<ISpObjectToken> token;
-      hr = enum_tokens->Next(1, &token, nullptr);
-      if (FAILED(hr))
-        break;
-      LPWSTR name_ptr = nullptr;
-      hr = token->GetStringValue(nullptr, &name_ptr);
-      if (FAILED(hr) || name_ptr == nullptr) {
-        if (name_ptr != nullptr)
-          CoTaskMemFree(name_ptr);
+    for (const auto &category_id : VOICE_CATEGORIES) {
+      CComPtr<ISpObjectTokenCategory> category;
+      if (FAILED(category.CoCreateInstance(CLSID_SpObjectTokenCategory)))
+        continue;
+      if (FAILED(category->SetId(category_id, FALSE))) {
+        logger.debug(_T("voice category absent, skipping: {}"), category_id);
         continue;
       }
-      std::wstring_view name_view{name_ptr};
-      std::string name(simdutf::utf8_length_from_utf16le(
-                           reinterpret_cast<const char16_t *>(name_view.data()),
-                           name_view.size()),
-                       '\0');
-      (void)simdutf::convert_utf16le_to_utf8(
-          reinterpret_cast<const char16_t *>(name_view.data()),
-          name_view.size(), name.data()); // Deliberately ignored return value
-      if (name.empty()) {
-        if (name_ptr != nullptr)
-          CoTaskMemFree(name_ptr);
+      CComPtr<IEnumSpObjectTokens> enum_tokens;
+      if (FAILED(category->EnumTokens(nullptr, nullptr, &enum_tokens)))
         continue;
-      }
-      CoTaskMemFree(name_ptr);
-      std::string language = "en-us";
-      LPWSTR lang_ptr = nullptr;
-      if (SUCCEEDED(token->GetStringValue(_T("Language"), &lang_ptr)) &&
-          lang_ptr != nullptr) {
-        std::wstring_view lang_view{lang_ptr};
-        LANGID langid{};
-        std::string lang_narrow(lang_view.size(), '\0');
-        std::ranges::transform(lang_view, lang_narrow.begin(),
-                               [](wchar_t c) { return static_cast<char>(c); });
-        auto [ptr, ec] = std::from_chars(
-            lang_narrow.data(), lang_narrow.data() + lang_narrow.size(), langid,
-            16);
-        CoTaskMemFree(lang_ptr);
-        if (ec == std::errc{}) {
-          std::array<wchar_t, LOCALE_NAME_MAX_LENGTH> locale_name{};
-          if (LCIDToLocaleName(MAKELCID(langid, SORT_DEFAULT),
-                               locale_name.data(), LOCALE_NAME_MAX_LENGTH,
-                               0) != 0) {
-            std::wstring_view locale_view{locale_name.data()};
-            language.resize(simdutf::utf8_length_from_utf16le(
-                reinterpret_cast<const char16_t *>(locale_view.data()),
-                locale_view.size()));
-            (void)simdutf::convert_utf16le_to_utf8(
-                reinterpret_cast<const char16_t *>(locale_view.data()),
-                locale_view.size(), language.data());
-            std::ranges::transform(
-                language, language.begin(),
-                [](unsigned char c) { return std::tolower(c); });
+      ULONG count = 0;
+      if (FAILED(enum_tokens->GetCount(&count)))
+        continue;
+      new_voices.reserve(new_voices.size() + count);
+      HRESULT hr = S_OK;
+      for (ULONG i = 0; i < count; ++i) {
+        CComPtr<ISpObjectToken> token;
+        hr = enum_tokens->Next(1, &token, nullptr);
+        if (FAILED(hr))
+          break;
+        LPWSTR name_ptr = nullptr;
+        hr = token->GetStringValue(nullptr, &name_ptr);
+        if (FAILED(hr) || name_ptr == nullptr) {
+          if (name_ptr != nullptr)
+            CoTaskMemFree(name_ptr);
+          continue;
+        }
+        std::wstring_view name_view{name_ptr};
+        std::string name(
+            simdutf::utf8_length_from_utf16le(
+                reinterpret_cast<const char16_t *>(name_view.data()),
+                name_view.size()),
+            '\0');
+        (void)simdutf::convert_utf16le_to_utf8(
+            reinterpret_cast<const char16_t *>(name_view.data()),
+            name_view.size(), name.data()); // Deliberately ignored return value
+        if (name.empty()) {
+          if (name_ptr != nullptr)
+            CoTaskMemFree(name_ptr);
+          continue;
+        }
+        CoTaskMemFree(name_ptr);
+        std::string language = "en-us";
+        LPWSTR lang_ptr = nullptr;
+        if (SUCCEEDED(token->GetStringValue(_T("Language"), &lang_ptr)) &&
+            lang_ptr != nullptr) {
+          std::wstring_view lang_view{lang_ptr};
+          LANGID langid{};
+          std::string lang_narrow(lang_view.size(), '\0');
+          std::ranges::transform(lang_view, lang_narrow.begin(), [](wchar_t c) {
+            return static_cast<char>(c);
+          });
+          auto [ptr, ec] = std::from_chars(
+              lang_narrow.data(), lang_narrow.data() + lang_narrow.size(),
+              langid, 16);
+          CoTaskMemFree(lang_ptr);
+          if (ec == std::errc{}) {
+            std::array<wchar_t, LOCALE_NAME_MAX_LENGTH> locale_name{};
+            if (LCIDToLocaleName(MAKELCID(langid, SORT_DEFAULT),
+                                 locale_name.data(), LOCALE_NAME_MAX_LENGTH,
+                                 0) != 0) {
+              std::wstring_view locale_view{locale_name.data()};
+              language.resize(simdutf::utf8_length_from_utf16le(
+                  reinterpret_cast<const char16_t *>(locale_view.data()),
+                  locale_view.size()));
+              (void)simdutf::convert_utf16le_to_utf8(
+                  reinterpret_cast<const char16_t *>(locale_view.data()),
+                  locale_view.size(), language.data());
+              std::ranges::transform(
+                  language, language.begin(),
+                  [](unsigned char c) { return std::tolower(c); });
+            }
           }
         }
+        new_voices.emplace_back(VoiceInfo{.token = std::move(token),
+                                          .name = std::move(name),
+                                          .language = std::move(language)});
       }
-      new_voices.emplace_back(VoiceInfo{.token = std::move(token),
-                                        .name = std::move(name),
-                                        .language = std::move(language)});
     }
+    if (new_voices.empty())
+      return std::unexpected(BackendError::NoVoices);
     {
       std::unique_lock ul(voices_lock);
       std::swap(voices, new_voices);
     }
     CComPtr<ISpObjectToken> current_token;
-    hr = voice->GetVoice(&current_token);
+    HRESULT hr = voice->GetVoice(&current_token);
     if (FAILED(hr) || current_token == nullptr) {
       return std::unexpected(BackendError::InternalBackendError);
     }
