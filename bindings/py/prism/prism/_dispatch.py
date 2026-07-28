@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     import concurrent.futures
 
 
-AvailabilityCallback = Callable[[BackendId, str, bool], None | Awaitable[None]]
+AvailabilityCallback = Callable[[BackendId, str, bool], Awaitable[None] | None]
 
 _log: Final[logging.Logger] = logging.getLogger("prism.dispatch")
 
@@ -75,7 +75,7 @@ class _Dispatcher:
         available: bool,
     ) -> None:
         try:
-            result: None | Awaitable[None] = cb(backend, name, available)
+            result: Awaitable[None] | None = cb(backend, name, available)
         except Exception:  # noqa: BLE001
             _log.exception(
                 "availability callback raised an exception, which is not allowed"
