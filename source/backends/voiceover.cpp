@@ -4,11 +4,13 @@
 #ifdef __APPLE__
 #include "../backend.h"
 #include "../backend_catalog.h"
-#include <simdutf.h>
-#if !TARGET_OS_WATCH
 #import <Foundation/Foundation.h>
 #include <TargetConditionals.h>
-#if TARGET_OS_OSX
+#include <simdutf.h>
+#if TARGET_OS_WATCH
+#import "PrismSpeechBridge-Swift.h"
+#import <WatchKit/WatchKit.h>
+#elif TARGET_OS_OSX
 #import <AppKit/AppKit.h>
 #import <Carbon/Carbon.h>
 #else
@@ -97,7 +99,9 @@ static inline void sync_on_main(dispatch_block_t block) {
 }
 
 static inline bool is_voiceover_active() {
-#if TARGET_OS_OSX
+#if TARGET_OS_WATCH
+  return static_cast<bool>(WKAccessibilityIsVoiceOverRunning());
+#elif TARGET_OS_OSX
   return static_cast<bool>([[NSWorkspace sharedWorkspace] isVoiceOverEnabled]);
 #else
   return UIAccessibilityIsVoiceOverRunning();
@@ -137,7 +141,9 @@ static constexpr NSString *const VOICE_OVER_APPLE_SCRIPT_SOURCE =
 class VoiceOverBackend final : public TextToSpeechBackend {
 private:
   std::atomic_flag initialized;
-#if TARGET_OS_OSX
+#if TARGET_OS_WATCH
+  PrismWatchSpeechSink *sink{nullptr};
+#elif TARGET_OS_OSX
   NSMutableString *pending_text{nullptr};
   dispatch_block_t debounce_block{nullptr};
   __weak NSWindow *cached_window{nullptr};
@@ -152,15 +158,13 @@ private:
 
 public:
   VoiceOverBackend() {
-    if constexpr (is_macos) {
+#if !TARGET_OS_WATCH
 #if TARGET_OS_OSX
-      pending_text = [NSMutableString string];
+    pending_text = [NSMutableString string];
+#else
+    queue = [NSMutableArray array];
 #endif
-    } else {
-#if !TARGET_OS_OSX
-      queue = [NSMutableArray array];
 #endif
-    }
   }
 
   ~VoiceOverBackend() override {
@@ -178,8 +182,12 @@ public:
   [[nodiscard]] std::bitset<64> get_features() const override {
     using namespace BackendFeature;
     std::bitset<64> features;
+#if TARGET_OS_WATCH
+    features |= SUPPORTS_SPEAK | SUPPORTS_OUTPUT;
+#else
     features |=
         SUPPORTS_SPEAK | SUPPORTS_OUTPUT | SUPPORTS_IS_SPEAKING | SUPPORTS_STOP;
+#endif
     if (is_voiceover_active()) {
       features |= IS_SUPPORTED_AT_RUNTIME;
     }
@@ -195,7 +203,13 @@ public:
         result = std::unexpected(BackendError::BackendNotAvailable);
         return;
       }
-#if TARGET_OS_OSX
+#if TARGET_OS_WATCH
+      if ([PrismWatchSpeechSink isSupported] == NO) {
+        result = std::unexpected(BackendError::BackendNotAvailable);
+        return;
+      }
+      sink = [[PrismWatchSpeechSink alloc] init];
+#elif TARGET_OS_OSX
       auto *const w = pick_best_window();
       if (w == nullptr) {
         result = std::unexpected(BackendError::BackendNotAvailable);
@@ -257,7 +271,11 @@ public:
         result = std::unexpected(BackendError::BackendNotAvailable);
         return;
       }
-#if TARGET_OS_OSX
+#if TARGET_OS_WATCH
+      if ([sink announce:ns_text interrupt:(interrupt ? YES : NO)] == NO) {
+        result = std::unexpected(BackendError::SpeakFailure);
+      }
+#elif TARGET_OS_OSX
       if (cached_window == nullptr || cached_window.contentView == nil) {
         cached_window = pick_best_window();
       }
@@ -291,6 +309,9 @@ public:
   BackendResult<bool> is_speaking() override {
     if (!initialized.test())
       return std::unexpected(BackendError::NotInitialized);
+#if TARGET_OS_WATCH
+    return std::unexpected(BackendError::NotImplemented);
+#else
     __block bool speaking = false;
     sync_on_main(^{
 #if TARGET_OS_OSX
@@ -300,13 +321,15 @@ public:
 #endif
     });
     return speaking;
+#endif
   }
 
   BackendResult<> stop() override {
     if (!initialized.test())
       return std::unexpected(BackendError::NotInitialized);
     sync_on_main(^{
-#if TARGET_OS_OSX
+#if TARGET_OS_WATCH
+#elif TARGET_OS_OSX
       cancel_debounce();
       [pending_text setString:@""];
       (void)try_invoke_legacy_handler(@"voStop", nil);
@@ -320,7 +343,9 @@ public:
 
 private:
   void shutdown_impl() {
-#if TARGET_OS_OSX
+#if TARGET_OS_WATCH
+    sink = nil;
+#elif TARGET_OS_OSX
     cancel_debounce();
     [pending_text setString:@""];
     cached_window = nullptr;
@@ -419,7 +444,7 @@ private:
           NSAccessibilityPriorityKey : @(NSAccessibilityPriorityHigh),
         });
   }
-#else
+#elif !TARGET_OS_WATCH
   void pump_if_needed() {
     if (!initialized.test())
       return;
@@ -440,6 +465,5 @@ private:
 
 REGISTER_BACKEND_WITH_ID(VoiceOverBackend, Backends::VoiceOver, "VoiceOver",
                          102);
-#endif
 #endif
 #endif
