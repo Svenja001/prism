@@ -12,6 +12,15 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
 elseif(CMAKE_SYSTEM_NAME STREQUAL "watchOS")
   find_library(WATCHKIT_FRAMEWORK WatchKit REQUIRED)
   target_link_libraries(prism PRIVATE ${WATCHKIT_FRAMEWORK})
+  string(TOLOWER "${CMAKE_OSX_SYSROOT}" _prism_sysroot_lc)
+  if(_prism_sysroot_lc MATCHES "simulator")
+    set(_prism_watch_env "-simulator")
+  else()
+    set(_prism_watch_env "")
+  endif()
+  set(_prism_swift_target
+      "${CMAKE_OSX_ARCHITECTURES}-apple-watchos${CMAKE_OSX_DEPLOYMENT_TARGET}${_prism_watch_env}"
+  )
   include(ExternalProject)
   ExternalProject_Add(
     prism_speech_bridge
@@ -19,6 +28,8 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "watchOS")
     CMAKE_ARGS -DCMAKE_SYSTEM_NAME=watchOS
                -DCMAKE_OSX_SYSROOT=${CMAKE_OSX_SYSROOT}
                -DCMAKE_OSX_ARCHITECTURES=${CMAKE_OSX_ARCHITECTURES}
+               -DCMAKE_OSX_DEPLOYMENT_TARGET=${CMAKE_OSX_DEPLOYMENT_TARGET}
+               -DCMAKE_Swift_COMPILER_TARGET=${_prism_swift_target}
     BUILD_BYPRODUCTS <BINARY_DIR>/libPrismSpeechBridge.a
                      <BINARY_DIR>/include/PrismSpeechBridge-Swift.h
     INSTALL_COMMAND "")
