@@ -17,10 +17,54 @@
 
 #include "utils.h"
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <iterator>
 #include <numeric>
 #include <utility>
+#if (defined(__x86_64__) || defined(_M_X64)) &&                                \
+    (defined(PRISM_FORCE_MANUAL) || !defined(__ELF__))
+#ifdef _MSC_VER
+#include <intrin.h>
+#else
+#include <cpuid.h>
+#endif
+#endif
+#if (defined(__aarch64__) || defined(_M_ARM64)) &&                             \
+    (defined(PRISM_FORCE_MANUAL) || !defined(__ELF__))
+#ifdef __APPLE__
+#include <sys/sysctl.h>
+#elifdef _WIN32
+#include <windows.h>
+#elifdef __linux__
+#include <asm/hwcap.h>
+#include <sys/auxv.h>
+#endif
+#endif
+#ifndef _MSC_VER
+#pragma STDC FP_CONTRACT ON
+#endif
+#if defined(__GNUC__) && !defined(__clang__)
+#define PRISM_REASSOC_ATTR                                                     \
+  [[gnu::optimize("-fassociative-math", "-fno-signed-zeros",                   \
+                  "-fno-trapping-math")]]
+#else
+#define PRISM_REASSOC_ATTR
+#endif
+#ifdef __clang__
+#define PRISM_REASSOC_PRAGMA _Pragma("clang fp reassociate(on) contract(fast)")
+#define PRISM_AVX10 "avx10.2-256"
+#else
+#define PRISM_REASSOC_PRAGMA
+#define PRISM_AVX10 "avx10.2"
+#endif
+#if !defined(PRISM_FORCE_MANUAL) && defined(__ELF__) &&                        \
+    ((defined(__x86_64__) || defined(_M_X64)) ||                               \
+     (defined(__aarch64__) && defined(__GNUC__) && !defined(__clang__)))
+#define PRISM_TARGET_CLONES 1
+#else
+#define PRISM_TARGET_CLONES 0
+#endif
 
 // Begin NVGT code
 double range_convert(double v, double a0, double a1, double b0, double b1) {
@@ -112,59 +156,238 @@ static inline float mean_square_to_db(double mean_square) {
   return static_cast<float>(10.0 * std::log10(mean_square + eps));
 }
 
-[[gnu::hot]]
-static inline float frame_db(std::span<const float> interleaved,
-                             std::size_t start_frame, std::size_t frame_len,
-                             std::size_t total_frames, std::size_t channels) {
-  const auto end_frame = std::min(start_frame + frame_len, total_frames);
-  if (end_frame <= start_frame)
-    return -160.0F;
-  const std::size_t nframes = end_frame - start_frame;
-  const std::size_t nsamples = nframes * channels;
-  const float *__restrict p = interleaved.data() + (start_frame * channels);
-  double s0 = 0;
-  double s1 = 0;
-  double s2 = 0;
-  double s3 = 0;
-  double s4 = 0;
-  double s5 = 0;
-  double s6 = 0;
-  double s7 = 0;
-  std::size_t i = 0;
-  const std::size_t lim = nsamples & ~static_cast<std::size_t>(7);
-  for (; i < lim; i += 8) {
-    const double v0 = p[i + 0];
-    const double v1 = p[i + 1];
-    const double v2 = p[i + 2];
-    const double v3 = p[i + 3];
-    const double v4 = p[i + 4];
-    const double v5 = p[i + 5];
-    const double v6 = p[i + 6];
-    const double v7 = p[i + 7];
-    s0 += v0 * v0;
-    s1 += v1 * v1;
-    s2 += v2 * v2;
-    s3 += v3 * v3;
-    s4 += v4 * v4;
-    s5 += v5 * v5;
-    s6 += v6 * v6;
-    s7 += v7 * v7;
+namespace {
+PRISM_REASSOC_ATTR [[gnu::always_inline]] inline void
+fill_frame_db_impl(std::span<const float> interleaved, std::size_t channels,
+                   std::size_t frame_len, std::size_t hop,
+                   std::size_t total_frames, std::span<float> db) {
+  const std::size_t n = db.size();
+  for (std::size_t i = 0; i < n; ++i) {
+    const std::size_t start_frame = i * hop;
+    const std::size_t end_frame =
+        std::min(start_frame + frame_len, total_frames);
+    if (end_frame <= start_frame) {
+      db[i] = -160.0F;
+      continue;
+    }
+    const std::size_t nsamples = (end_frame - start_frame) * channels;
+    const float *__restrict p = interleaved.data() + (start_frame * channels);
+    float sumsq;
+    {
+      PRISM_REASSOC_PRAGMA
+      std::array<float, 16> s{};
+      std::size_t k = 0;
+      const std::size_t lim = nsamples & ~static_cast<std::size_t>(15);
+      for (; k < lim; k += 16)
+        for (int j = 0; j < 16; ++j) {
+          const float v = p[k + j];
+          s[j] += v * v;
+        }
+      float acc = 0.0F;
+      for (int j = 0; j < 16; ++j)
+        acc += s[j];
+      for (; k < nsamples; ++k) {
+        const float v = p[k];
+        acc += v * v;
+      }
+      sumsq = acc;
+    }
+    db[i] = mean_square_to_db(static_cast<double>(sumsq) /
+                              static_cast<double>(nsamples));
   }
-  // Pairwise tree reduction
-  double sumsq = ((s0 + s1) + (s2 + s3)) + ((s4 + s5) + (s6 + s7));
-  for (; i < nsamples; ++i) {
-    const double v = p[i];
-    sumsq += v * v;
-  }
-  return mean_square_to_db(sumsq / static_cast<double>(nsamples));
 }
+
+using prism_fill_fn = void (*)(std::span<const float>, std::size_t, std::size_t,
+                               std::size_t, std::size_t, std::span<float>);
+
+#if PRISM_TARGET_CLONES
+#if defined(__x86_64__) || defined(_M_X64)
+[[gnu::target_clones("arch=x86-64-v4", "arch=x86-64-v3", "arch=x86-64-v2",
+                     "default")]]
+#else
+[[gnu::target_clones("sve2", "sve", "default")]]
+#endif
+PRISM_REASSOC_ATTR void fill_frame_db(std::span<const float> in, std::size_t ch,
+                                      std::size_t fl, std::size_t hop,
+                                      std::size_t tot, std::span<float> db) {
+  fill_frame_db_impl(in, ch, fl, hop, tot, db);
+}
+#else
+#if defined(__x86_64__) || defined(_M_X64)
+#ifdef _MSC_VER
+inline void cpuidex(std::array<int, 4> &info, int leaf, int sub) {
+  __cpuidex(info.data(), leaf, sub);
+}
+inline unsigned long long xgetbv0() { return _xgetbv(0); }
+#else
+inline void cpuidex(std::array<int, 4> &info, int leaf, int sub) {
+  __cpuid_count(leaf, sub, info[0], info[1], info[2], info[3]);
+}
+inline unsigned long long xgetbv0() {
+  unsigned int lo, hi;
+  __asm__ __volatile__("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
+  return (static_cast<unsigned long long>(hi) << 32) | lo;
+}
+#endif
+PRISM_REASSOC_ATTR __attribute__((target(PRISM_AVX10))) void
+fill_v5(std::span<const float> in, std::size_t ch, std::size_t fl,
+        std::size_t hop, std::size_t tot, std::span<float> db) {
+  fill_frame_db_impl(in, ch, fl, hop, tot, db);
+}
+PRISM_REASSOC_ATTR
+__attribute__((target("avx512f,avx512bw,avx512cd,avx512dq,avx512vl"))) void
+fill_v4(std::span<const float> in, std::size_t ch, std::size_t fl,
+        std::size_t hop, std::size_t tot, std::span<float> db) {
+  fill_frame_db_impl(in, ch, fl, hop, tot, db);
+}
+PRISM_REASSOC_ATTR __attribute__((target("avx2,fma"))) void
+fill_v3(std::span<const float> in, std::size_t ch, std::size_t fl,
+        std::size_t hop, std::size_t tot, std::span<float> db) {
+  fill_frame_db_impl(in, ch, fl, hop, tot, db);
+}
+PRISM_REASSOC_ATTR __attribute__((target("sse4.2"))) void
+fill_v2(std::span<const float> in, std::size_t ch, std::size_t fl,
+        std::size_t hop, std::size_t tot, std::span<float> db) {
+  fill_frame_db_impl(in, ch, fl, hop, tot, db);
+}
+PRISM_REASSOC_ATTR void fill_base(std::span<const float> in, std::size_t ch,
+                                  std::size_t fl, std::size_t hop,
+                                  std::size_t tot, std::span<float> db) {
+  fill_frame_db_impl(in, ch, fl, hop, tot, db);
+}
+
+prism_fill_fn resolve_fill_frames_db_impl() {
+  std::array<int, 4> r;
+  cpuidex(r, 0, 0);
+  const int maxleaf = r[0];
+  cpuidex(r, 1, 0);
+  const bool sse42 = (r[2] & (1 << 20)) != 0;
+  const bool popcnt = (r[2] & (1 << 23)) != 0;
+  const bool osxsave = (r[2] & (1 << 27)) != 0;
+  const bool avx = (r[2] & (1 << 28)) != 0;
+  const bool fma = (r[2] & (1 << 12)) != 0;
+  bool ymm = false;
+  bool zmm = false;
+  bool opmask = false;
+  if (osxsave) {
+    const unsigned long long xcr0 = xgetbv0();
+    ymm = (xcr0 & 0x6) == 0x6;            // XMM|YMM
+    opmask = (xcr0 & 0x20) != 0;          // bit5 opmask (k-regs)
+    zmm = ymm && ((xcr0 & 0xE0) == 0xE0); // opmask|ZMM_Hi256|Hi16_ZMM
+  }
+  bool avx2 = false;
+  bool f = false;
+  bool bw = false;
+  bool cd = false;
+  bool dq = false;
+  bool vl = false;
+  bool avx10_256 = false;
+  if (maxleaf >= 7) {
+    cpuidex(r, 7, 0);
+    avx2 = (r[1] & (1 << 5)) != 0;
+    f = (r[1] & (1 << 16)) != 0;
+    dq = (r[1] & (1 << 17)) != 0;
+    cd = (r[1] & (1 << 28)) != 0;
+    bw = (r[1] & (1 << 30)) != 0;
+    vl = (r[1] & (1 << 31)) != 0;
+    cpuidex(r, 7, 1);
+    const bool avx10 = (r[3] & (1 << 19)) != 0;
+    if (avx10 && maxleaf >= 0x24) {
+      cpuidex(r, 0x24, 0);
+      const int ver = r[1] & 0xFF;
+      const bool vl256 = (r[1] & (1 << 17)) != 0;
+      avx10_256 = (ver >= 2) && vl256 && ymm && opmask;
+    }
+  }
+  if (avx10_256)
+    return &fill_v5;
+  if (f && bw && cd && dq && vl && zmm)
+    return &fill_v4;
+  if (avx && avx2 && fma && ymm)
+    return &fill_v3;
+  if (sse42 && popcnt)
+    return &fill_v2;
+  return &fill_base;
+}
+#elif defined(__aarch64__) || defined(_M_ARM64)
+PRISM_REASSOC_ATTR __attribute__((target("arch=armv8-a+sve2"))) void
+fill_sve2(std::span<const float> in, std::size_t ch, std::size_t fl,
+          std::size_t hop, std::size_t tot, std::span<float> db) {
+  fill_frame_db_impl(in, ch, fl, hop, tot, db);
+}
+PRISM_REASSOC_ATTR __attribute__((target("arch=armv8-a+sve"))) static void
+fill_sve(std::span<const float> in, std::size_t ch, std::size_t fl,
+         std::size_t hop, std::size_t tot, std::span<float> db) {
+  fill_frame_db_impl(in, ch, fl, hop, tot, db);
+}
+PRISM_REASSOC_ATTR static void fill_neon(std::span<const float> in,
+                                         std::size_t ch, std::size_t fl,
+                                         std::size_t hop, std::size_t tot,
+                                         std::span<float> db) {
+  fill_frame_db_impl(in, ch, fl, hop, tot, db);
+}
+static prism_fill_fn resolve_fill_frames_db_impl() {
+  bool sve = false;
+  bool sve2 = false;
+#ifdef __APPLE__
+  auto has = [](const char *name) {
+    int v = 0;
+    std::size_t sz = sizeof(v);
+    return sysctlbyname(name, &v, &sz, nullptr, 0) == 0 && v != 0;
+  };
+  sve = has("hw.optional.arm.FEAT_SVE");
+  sve2 = has("hw.optional.arm.FEAT_SVE2");
+#elifdef _WIN32
+#ifdef PF_ARM_SVE_INSTRUCTIONS_AVAILABLE
+  sve = IsProcessorFeaturePresent(PF_ARM_SVE_INSTRUCTIONS_AVAILABLE) != 0;
+#endif
+#ifdef PF_ARM_SVE2_INSTRUCTIONS_AVAILABLE
+  sve2 = IsProcessorFeaturePresent(PF_ARM_SVE2_INSTRUCTIONS_AVAILABLE) != 0;
+#endif
+#elifdef __linux__
+  const unsigned long hw = getauxval(AT_HWCAP);
+  const unsigned long hw2 = getauxval(AT_HWCAP2);
+#ifdef HWCAP_SVE
+  sve = (hw & HWCAP_SVE) != 0;
+#endif
+#ifdef HWCAP2_SVE2
+  sve2 = (hw2 & HWCAP2_SVE2) != 0;
+#endif
+#endif
+  if (sve2)
+    return &fill_sve2;
+  if (sve)
+    return &fill_sve;
+  return &fill_neon;
+}
+#else
+PRISM_REASSOC_ATTR static void fill_base(std::span<const float> in,
+                                         std::size_t ch, std::size_t fl,
+                                         std::size_t hop, std::size_t tot,
+                                         std::span<float> db) {
+  fill_frame_db_impl(in, ch, fl, hop, tot, db);
+}
+static prism_fill_fn resolve_fill_frames_db_impl() { return &fill_base; }
+#endif
+}
+
+static void fill_frame_db(std::span<const float> in, std::size_t ch,
+                          std::size_t fl, std::size_t hop, std::size_t tot,
+                          std::span<float> db) {
+  static const prism_fill_fn impl = resolve_fill_frames_db_impl();
+  impl(in, ch, fl, hop, tot, db);
+}
+#endif
+#undef PRISM_TARGET_CLONES
+#undef PRISM_REASSOC_ATTR
+#undef PRISM_REASSOC_PRAGMA
 
 static inline float percentile(std::span<const float> x, float p,
                                std::vector<float> &scratch) {
   if (x.empty())
     return -160.0F;
   p = std::clamp(p, 0.0F, 1.0F);
-  scratch.assign(x.begin(), x.end()); // reuses capacity
+  scratch.assign(x.begin(), x.end());
   const std::size_t n = scratch.size();
   if (n == 1)
     return scratch[0];
@@ -336,11 +559,8 @@ compute_trim_bounds_rms_gate(std::span<const float> samples_interleaved,
   static thread_local TrimWorkspace W;
   W.db.resize(n);
   auto &db = W.db;
-  for (std::size_t i = 0; i < n; ++i) {
-    const auto start_frame = i * hop;
-    db[i] = frame_db(samples_interleaved, start_frame, frame_len, total_frames,
-                     channels);
-  }
+  fill_frame_db(samples_interleaved, channels, frame_len, hop, total_frames,
+                std::span<float>{db});
   const auto head_frames = std::min<std::size_t>(
       n, std::max<std::size_t>(std::size_t{1},
                                ms_to_frames(P.head_ms, sample_rate) / hop));
