@@ -22,29 +22,41 @@
 #include <iterator>
 #include <numeric>
 #include <utility>
+#define PRISM_DISPATCH_NONE 0
+#define PRISM_DISPATCH_CLONES 1
+#define PRISM_DISPATCH_X86 2
+#define PRISM_DISPATCH_ARM 3
+#if defined(__GNUC__) || defined(__clang__)
+#define PRISM_TARGET_ATTR(x) __attribute__((target(x)))
+#define PRISM_HAVE_TARGET_ATTR 1
+#else
+#define PRISM_TARGET_ATTR(x)
+#define PRISM_HAVE_TARGET_ATTR 0
+#endif
 #if !defined(PRISM_FORCE_MANUAL) && defined(__ELF__) &&                        \
     ((defined(__x86_64__) || defined(_M_X64)) ||                               \
      (defined(__aarch64__) && defined(__GNUC__) && !defined(__clang__)))
-#define PRISM_TARGET_CLONES 1
+#define PRISM_DISPATCH PRISM_DISPATCH_CLONES
+#elif PRISM_HAVE_TARGET_ATTR && (defined(__x86_64__) || defined(_M_X64))
+#define PRISM_DISPATCH PRISM_DISPATCH_X86
+#elif PRISM_HAVE_TARGET_ATTR && !defined(_WIN32) &&                            \
+    (defined(__aarch64__) || defined(_M_ARM64))
+#define PRISM_DISPATCH PRISM_DISPATCH_ARM
 #else
-#define PRISM_TARGET_CLONES 0
+#define PRISM_DISPATCH PRISM_DISPATCH_NONE
 #endif
-#if !PRISM_TARGET_CLONES
-#if defined(__x86_64__) || defined(_M_X64)
+#if PRISM_DISPATCH == PRISM_DISPATCH_X86
 #ifdef _MSC_VER
 #include <intrin.h>
 #else
 #include <cpuid.h>
 #endif
-#elif defined(__aarch64__) || defined(_M_ARM64)
+#elif PRISM_DISPATCH == PRISM_DISPATCH_ARM
 #ifdef __APPLE__
 #include <sys/sysctl.h>
-#elifdef _WIN32
-#include <windows.h>
 #elifdef __linux__
 #include <asm/hwcap.h>
 #include <sys/auxv.h>
-#endif
 #endif
 #endif
 #ifndef _MSC_VER
@@ -199,7 +211,7 @@ fill_frame_db_impl(std::span<const float> interleaved, std::size_t channels,
 using prism_fill_fn = void (*)(std::span<const float>, std::size_t, std::size_t,
                                std::size_t, std::size_t, std::span<float>);
 
-#if PRISM_TARGET_CLONES
+#if PRISM_DISPATCH == PRISM_DISPATCH_CLONES
 #if defined(__x86_64__) || defined(_M_X64)
 [[gnu::target_clones("arch=x86-64-v4", "arch=x86-64-v3", "arch=x86-64-v2",
                      "default")]]
@@ -213,7 +225,7 @@ PRISM_REASSOC_ATTR void fill_frame_db(std::span<const float> in, std::size_t ch,
 }
 } // namespace
 #else
-#if defined(__x86_64__) || defined(_M_X64)
+#if PRISM_DISPATCH == PRISM_DISPATCH_X86
 #ifdef _MSC_VER
 inline void cpuidex(std::array<int, 4> &info, int leaf, int sub) {
   __cpuidex(info.data(), leaf, sub);
@@ -226,34 +238,35 @@ inline void cpuidex(std::array<int, 4> &info, int leaf, int sub) {
 }
 
 inline unsigned long long xgetbv0() {
-  unsigned int lo, hi;
+  unsigned int lo;
+  unsigned int hi;
   __asm__ __volatile__("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
   return (static_cast<unsigned long long>(hi) << 32) | lo;
 }
 #endif
 
-PRISM_REASSOC_ATTR __attribute__((target(PRISM_AVX10))) void
-fill_v5(std::span<const float> in, std::size_t ch, std::size_t fl,
-        std::size_t hop, std::size_t tot, std::span<float> db) {
+PRISM_REASSOC_ATTR PRISM_TARGET_ATTR(PRISM_AVX10) void fill_v5(
+    std::span<const float> in, std::size_t ch, std::size_t fl, std::size_t hop,
+    std::size_t tot, std::span<float> db) {
   fill_frame_db_impl(in, ch, fl, hop, tot, db);
 }
 
 PRISM_REASSOC_ATTR
-__attribute__((target("avx512f,avx512bw,avx512cd,avx512dq,avx512vl"))) void
-fill_v4(std::span<const float> in, std::size_t ch, std::size_t fl,
-        std::size_t hop, std::size_t tot, std::span<float> db) {
+PRISM_TARGET_ATTR("avx512f,avx512bw,avx512cd,avx512dq,avx512vl")
+void fill_v4(std::span<const float> in, std::size_t ch, std::size_t fl,
+             std::size_t hop, std::size_t tot, std::span<float> db) {
   fill_frame_db_impl(in, ch, fl, hop, tot, db);
 }
 
-PRISM_REASSOC_ATTR __attribute__((target("avx2,fma"))) void
-fill_v3(std::span<const float> in, std::size_t ch, std::size_t fl,
-        std::size_t hop, std::size_t tot, std::span<float> db) {
+PRISM_REASSOC_ATTR PRISM_TARGET_ATTR("avx2,fma") void fill_v3(
+    std::span<const float> in, std::size_t ch, std::size_t fl, std::size_t hop,
+    std::size_t tot, std::span<float> db) {
   fill_frame_db_impl(in, ch, fl, hop, tot, db);
 }
 
-PRISM_REASSOC_ATTR __attribute__((target("sse4.2"))) void
-fill_v2(std::span<const float> in, std::size_t ch, std::size_t fl,
-        std::size_t hop, std::size_t tot, std::span<float> db) {
+PRISM_REASSOC_ATTR PRISM_TARGET_ATTR("sse4.2") void fill_v2(
+    std::span<const float> in, std::size_t ch, std::size_t fl, std::size_t hop,
+    std::size_t tot, std::span<float> db) {
   fill_frame_db_impl(in, ch, fl, hop, tot, db);
 }
 
@@ -316,16 +329,16 @@ prism_fill_fn resolve_fill_frames_db_impl() {
     return &fill_v2;
   return &fill_base;
 }
-#elif defined(__aarch64__) || defined(_M_ARM64)
-PRISM_REASSOC_ATTR __attribute__((target("arch=armv8-a+sve2"))) void
-fill_sve2(std::span<const float> in, std::size_t ch, std::size_t fl,
-          std::size_t hop, std::size_t tot, std::span<float> db) {
+#elif PRISM_DISPATCH == PRISM_DISPATCH_ARM
+PRISM_REASSOC_ATTR PRISM_TARGET_ATTR("arch=armv8-a+sve2") void fill_sve2(
+    std::span<const float> in, std::size_t ch, std::size_t fl, std::size_t hop,
+    std::size_t tot, std::span<float> db) {
   fill_frame_db_impl(in, ch, fl, hop, tot, db);
 }
 
-PRISM_REASSOC_ATTR __attribute__((target("arch=armv8-a+sve"))) void
-fill_sve(std::span<const float> in, std::size_t ch, std::size_t fl,
-         std::size_t hop, std::size_t tot, std::span<float> db) {
+PRISM_REASSOC_ATTR PRISM_TARGET_ATTR("arch=armv8-a+sve") void fill_sve(
+    std::span<const float> in, std::size_t ch, std::size_t fl, std::size_t hop,
+    std::size_t tot, std::span<float> db) {
   fill_frame_db_impl(in, ch, fl, hop, tot, db);
 }
 
@@ -346,13 +359,6 @@ prism_fill_fn resolve_fill_frames_db_impl() {
   };
   sve = has("hw.optional.arm.FEAT_SVE");
   sve2 = has("hw.optional.arm.FEAT_SVE2");
-#elifdef _WIN32
-#ifdef PF_ARM_SVE_INSTRUCTIONS_AVAILABLE
-  sve = IsProcessorFeaturePresent(PF_ARM_SVE_INSTRUCTIONS_AVAILABLE) != 0;
-#endif
-#ifdef PF_ARM_SVE2_INSTRUCTIONS_AVAILABLE
-  sve2 = IsProcessorFeaturePresent(PF_ARM_SVE2_INSTRUCTIONS_AVAILABLE) != 0;
-#endif
 #elifdef __linux__
   const unsigned long hw = getauxval(AT_HWCAP);
   const unsigned long hw2 = getauxval(AT_HWCAP2);
@@ -387,7 +393,13 @@ static void fill_frame_db(std::span<const float> in, std::size_t ch,
   impl(in, ch, fl, hop, tot, db);
 }
 #endif
-#undef PRISM_TARGET_CLONES
+#undef PRISM_DISPATCH
+#undef PRISM_DISPATCH_ARM
+#undef PRISM_DISPATCH_CLONES
+#undef PRISM_DISPATCH_NONE
+#undef PRISM_DISPATCH_X86
+#undef PRISM_HAVE_TARGET_ATTR
+#undef PRISM_TARGET_ATTR
 #undef PRISM_REASSOC_ATTR
 #undef PRISM_REASSOC_PRAGMA
 
