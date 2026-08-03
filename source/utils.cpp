@@ -22,16 +22,21 @@
 #include <iterator>
 #include <numeric>
 #include <utility>
-#if (defined(__x86_64__) || defined(_M_X64)) &&                                \
-    (defined(PRISM_FORCE_MANUAL) || !defined(__ELF__))
+#if !defined(PRISM_FORCE_MANUAL) && defined(__ELF__) &&                        \
+    ((defined(__x86_64__) || defined(_M_X64)) ||                               \
+     (defined(__aarch64__) && defined(__GNUC__) && !defined(__clang__)))
+#define PRISM_TARGET_CLONES 1
+#else
+#define PRISM_TARGET_CLONES 0
+#endif
+#if !PRISM_TARGET_CLONES
+#if defined(__x86_64__) || defined(_M_X64)
 #ifdef _MSC_VER
 #include <intrin.h>
 #else
 #include <cpuid.h>
 #endif
-#endif
-#if (defined(__aarch64__) || defined(_M_ARM64)) &&                             \
-    (defined(PRISM_FORCE_MANUAL) || !defined(__ELF__))
+#elif defined(__aarch64__) || defined(_M_ARM64)
 #ifdef __APPLE__
 #include <sys/sysctl.h>
 #elifdef _WIN32
@@ -39,6 +44,7 @@
 #elifdef __linux__
 #include <asm/hwcap.h>
 #include <sys/auxv.h>
+#endif
 #endif
 #endif
 #ifndef _MSC_VER
@@ -57,13 +63,6 @@
 #else
 #define PRISM_REASSOC_PRAGMA
 #define PRISM_AVX10 "avx10.2"
-#endif
-#if !defined(PRISM_FORCE_MANUAL) && defined(__ELF__) &&                        \
-    ((defined(__x86_64__) || defined(_M_X64)) ||                               \
-     (defined(__aarch64__) && defined(__GNUC__) && !defined(__clang__)))
-#define PRISM_TARGET_CLONES 1
-#else
-#define PRISM_TARGET_CLONES 0
 #endif
 
 // Begin NVGT code
@@ -212,44 +211,52 @@ PRISM_REASSOC_ATTR void fill_frame_db(std::span<const float> in, std::size_t ch,
                                       std::size_t tot, std::span<float> db) {
   fill_frame_db_impl(in, ch, fl, hop, tot, db);
 }
+} // namespace
 #else
 #if defined(__x86_64__) || defined(_M_X64)
 #ifdef _MSC_VER
 inline void cpuidex(std::array<int, 4> &info, int leaf, int sub) {
   __cpuidex(info.data(), leaf, sub);
 }
+
 inline unsigned long long xgetbv0() { return _xgetbv(0); }
 #else
 inline void cpuidex(std::array<int, 4> &info, int leaf, int sub) {
   __cpuid_count(leaf, sub, info[0], info[1], info[2], info[3]);
 }
+
 inline unsigned long long xgetbv0() {
   unsigned int lo, hi;
   __asm__ __volatile__("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
   return (static_cast<unsigned long long>(hi) << 32) | lo;
 }
 #endif
+
 PRISM_REASSOC_ATTR __attribute__((target(PRISM_AVX10))) void
 fill_v5(std::span<const float> in, std::size_t ch, std::size_t fl,
         std::size_t hop, std::size_t tot, std::span<float> db) {
   fill_frame_db_impl(in, ch, fl, hop, tot, db);
 }
+
 PRISM_REASSOC_ATTR
 __attribute__((target("avx512f,avx512bw,avx512cd,avx512dq,avx512vl"))) void
 fill_v4(std::span<const float> in, std::size_t ch, std::size_t fl,
         std::size_t hop, std::size_t tot, std::span<float> db) {
   fill_frame_db_impl(in, ch, fl, hop, tot, db);
 }
+
 PRISM_REASSOC_ATTR __attribute__((target("avx2,fma"))) void
 fill_v3(std::span<const float> in, std::size_t ch, std::size_t fl,
         std::size_t hop, std::size_t tot, std::span<float> db) {
   fill_frame_db_impl(in, ch, fl, hop, tot, db);
 }
+
 PRISM_REASSOC_ATTR __attribute__((target("sse4.2"))) void
 fill_v2(std::span<const float> in, std::size_t ch, std::size_t fl,
         std::size_t hop, std::size_t tot, std::span<float> db) {
   fill_frame_db_impl(in, ch, fl, hop, tot, db);
 }
+
 PRISM_REASSOC_ATTR void fill_base(std::span<const float> in, std::size_t ch,
                                   std::size_t fl, std::size_t hop,
                                   std::size_t tot, std::span<float> db) {
@@ -315,16 +322,19 @@ fill_sve2(std::span<const float> in, std::size_t ch, std::size_t fl,
           std::size_t hop, std::size_t tot, std::span<float> db) {
   fill_frame_db_impl(in, ch, fl, hop, tot, db);
 }
+
 PRISM_REASSOC_ATTR __attribute__((target("arch=armv8-a+sve"))) void
 fill_sve(std::span<const float> in, std::size_t ch, std::size_t fl,
          std::size_t hop, std::size_t tot, std::span<float> db) {
   fill_frame_db_impl(in, ch, fl, hop, tot, db);
 }
+
 PRISM_REASSOC_ATTR void fill_neon(std::span<const float> in, std::size_t ch,
                                   std::size_t fl, std::size_t hop,
                                   std::size_t tot, std::span<float> db) {
   fill_frame_db_impl(in, ch, fl, hop, tot, db);
 }
+
 prism_fill_fn resolve_fill_frames_db_impl() {
   bool sve = false;
   bool sve2 = false;
@@ -365,6 +375,7 @@ PRISM_REASSOC_ATTR void fill_base(std::span<const float> in, std::size_t ch,
                                   std::size_t tot, std::span<float> db) {
   fill_frame_db_impl(in, ch, fl, hop, tot, db);
 }
+
 prism_fill_fn resolve_fill_frames_db_impl() { return &fill_base; }
 #endif
 }
