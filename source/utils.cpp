@@ -315,18 +315,17 @@ fill_sve2(std::span<const float> in, std::size_t ch, std::size_t fl,
           std::size_t hop, std::size_t tot, std::span<float> db) {
   fill_frame_db_impl(in, ch, fl, hop, tot, db);
 }
-PRISM_REASSOC_ATTR __attribute__((target("arch=armv8-a+sve"))) static void
+PRISM_REASSOC_ATTR __attribute__((target("arch=armv8-a+sve"))) void
 fill_sve(std::span<const float> in, std::size_t ch, std::size_t fl,
          std::size_t hop, std::size_t tot, std::span<float> db) {
   fill_frame_db_impl(in, ch, fl, hop, tot, db);
 }
-PRISM_REASSOC_ATTR static void fill_neon(std::span<const float> in,
-                                         std::size_t ch, std::size_t fl,
-                                         std::size_t hop, std::size_t tot,
-                                         std::span<float> db) {
+PRISM_REASSOC_ATTR void fill_neon(std::span<const float> in, std::size_t ch,
+                                  std::size_t fl, std::size_t hop,
+                                  std::size_t tot, std::span<float> db) {
   fill_frame_db_impl(in, ch, fl, hop, tot, db);
 }
-static prism_fill_fn resolve_fill_frames_db_impl() {
+prism_fill_fn resolve_fill_frames_db_impl() {
   bool sve = false;
   bool sve2 = false;
 #ifdef __APPLE__
@@ -361,13 +360,12 @@ static prism_fill_fn resolve_fill_frames_db_impl() {
   return &fill_neon;
 }
 #else
-PRISM_REASSOC_ATTR static void fill_base(std::span<const float> in,
-                                         std::size_t ch, std::size_t fl,
-                                         std::size_t hop, std::size_t tot,
-                                         std::span<float> db) {
+PRISM_REASSOC_ATTR void fill_base(std::span<const float> in, std::size_t ch,
+                                  std::size_t fl, std::size_t hop,
+                                  std::size_t tot, std::span<float> db) {
   fill_frame_db_impl(in, ch, fl, hop, tot, db);
 }
-static prism_fill_fn resolve_fill_frames_db_impl() { return &fill_base; }
+prism_fill_fn resolve_fill_frames_db_impl() { return &fill_base; }
 #endif
 }
 
