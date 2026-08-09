@@ -637,30 +637,48 @@ struct formatter<
   template <typename Context>
   auto format(const std::exception& ex, Context& ctx) const
       -> decltype(ctx.out()) {
-    auto out = ctx.out();
+    return write(ctx.out(), ex);
+  }
+
+ private:
+  template <typename OutputIt>
+  auto write(OutputIt out, const std::exception& ex) const -> OutputIt {
 #if FMT_USE_RTTI
     if (with_typename_) {
       out = detail::write_demangled_name(out, typeid(ex));
       *out++ = ':';
       *out++ = ' ';
     }
-#endif
-    return detail::write_bytes<char>(out, string_view(ex.what()));
+#endif  // FMT_USE_RTTI
+    out = detail::write_bytes<char>(out, string_view(ex.what()));
+#if FMT_USE_RTTI
+    // If the exception carries a nested exception (e.g. via
+    // std::throw_with_nested), format the whole chain.
+    if (auto* nested = dynamic_cast<const std::nested_exception*>(&ex)) {
+      if (auto ep = nested->nested_ptr()) {
+        out = detail::write(out, string_view(": "));
+        try {
+          std::rethrow_exception(ep);
+        } catch (const std::exception& nested_ex) {
+          out = write(out, nested_ex);
+        } catch (...) {
+          out = detail::write(out, string_view("unknown exception"));
+        }
+      }
+    }
+#endif  // FMT_USE_RTTI
+    return out;
   }
 };
 
 template <> struct formatter<std::exception_ptr> : formatter<std::exception> {
   template <typename FormatContext>
-  auto format(const std::exception_ptr& ex_ptr, FormatContext& ctx) const
+  auto format(const std::exception_ptr& ep, FormatContext& ctx) const
       -> decltype(ctx.out()) {
-    if (!ex_ptr) {
-      return detail::write(ctx.out(), string_view("nullptr"));
-    }
-
+    if (!ep) return detail::write(ctx.out(), string_view("none"));
     try {
-      std::rethrow_exception(ex_ptr);
+      std::rethrow_exception(ep);
     } catch (const std::exception& e) {
-      // Reuses the base formatter<std::exception>::format behavior perfectly
       return formatter<std::exception>::format(e, ctx);
     } catch (...) {
       return detail::write(ctx.out(), string_view("unknown exception"));
