@@ -15,7 +15,7 @@ target_include_directories(
 target_link_libraries(
   prism_common
   INTERFACE prism::dep::fmt prism::dep::simdutf prism::dep::concurrentqueue
-            prism::dep::dr_wav prism::dep::moderncom)
+            prism::dep::dr_wav prism::dep::moderncom prism::dep::highway)
 set(PRISM_PUBLIC_DEFINES
     NOMINMAX
     $<$<STREQUAL:$<TARGET_PROPERTY:prism,TYPE>,STATIC_LIBRARY>:PRISM_STATIC>)
@@ -31,6 +31,7 @@ set(_prism_sources
     source/backend_check.cpp
     source/backend_enumerator.cpp
     source/delayimp.cpp
+    source/simd_kernels.cpp
     source/frozen_registry.cpp
     source/logging.cpp
     source/plugin_loader.cpp

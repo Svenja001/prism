@@ -2,6 +2,7 @@
 
 #ifdef _WIN32
 #include "logging.h"
+// clang-format off
 #include <windows.h>
 #include <array>
 #include <cstring>
@@ -10,6 +11,7 @@
 #include <filesystem>
 #include <tchar.h>
 #include <utility>
+// clang-format on
 
 template <typename T> static constexpr FARPROC stub_cast(T func) {
   // NOLINTNEXTLINE(bugprone-casting-through-void)

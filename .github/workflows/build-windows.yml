@@ -11,7 +11,7 @@ jobs:
         include:
           - { name: x64,   msvc_arch: amd64,       extra_cmake: "" }
           - { name: arm64, msvc_arch: amd64_arm64,  extra_cmake: "-DCMAKE_SYSTEM_PROCESSOR=ARM64" }
-    runs-on: windows-latest
+    runs-on: windows-2025-vs2026
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: ilammy/msvc-dev-cmd@v1

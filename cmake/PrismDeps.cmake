@@ -153,6 +153,26 @@ prism_declare_dependency(
   LICENSE
   LICENSES/fmt)
 prism_declare_dependency(
+  highway
+  PACKAGE
+  HWY
+  MIN_VERSION
+  1.2.0
+  SYSTEM_TARGETS
+  hwy::hwy
+  BUNDLED_ROOT
+  third_party/highway
+  BUNDLED_SOURCES
+  hwy/abort.cc
+  hwy/per_target.cc
+  hwy/print.cc
+  hwy/targets.cc
+  hwy/timer.cc
+  BUNDLED_INCLUDES
+  .
+  LICENSE
+  LICENSES/highway)
+prism_declare_dependency(
   simdutf
   PACKAGE
   simdutf

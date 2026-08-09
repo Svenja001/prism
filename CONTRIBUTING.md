@@ -212,7 +212,7 @@ The clang-format tool is the authoritative code formatting source. Always format
 Additionally, the following style guidelines, alongside the conventions in the manual, apply:
 
 * In classes, private class members come before public ones. All class fields use snake_case and do not have an m_ prefix or _ suffix.
-* Headers are auto-sorted by clang-format. If modifying the delay load failure hook, windows.h MUST be included before delayimp.h, so you will need to modify the file after formatting.
+* Headers are auto-sorted by clang-format.
 * The Python bindings use Ruff's default formatting rules.
 * Shell scripts should be formatted with shfmt, and nix files should be formatted with nixfmt.
 
