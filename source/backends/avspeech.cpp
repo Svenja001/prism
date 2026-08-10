@@ -162,7 +162,7 @@ public:
     if (!success) {
       return std::unexpected(BackendError::BackendNotAvailable);
     }
-    if (@available(macOS 14.0, iOS 17.0, *)) {
+    if (@available(macOS 14.0, iOS 17.0, tvOS 17.0, *)) {
       dispatch_semaphore_t auth_sema = dispatch_semaphore_create(0);
       [[maybe_unused]] __block auto auth_status =
           AVSpeechSynthesisPersonalVoiceAuthorizationStatusNotDetermined;
