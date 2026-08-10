@@ -1,73 +1,99 @@
 // SPDX-License-Identifier: MPL-2.0
+
+#ifdef __linux__
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+#endif
 #include "lock.h"
 #include <stdbool.h>
-#include <stddef.h>
-#include <stdint.h>
+#ifdef __linux__
+#include <linux/futex.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#endif
 
-_Static_assert(sizeof(atomic_int) == sizeof(int), "atomic_int size mismatch");
-_Static_assert(sizeof(int) == 4, "futex requires 32-bit int");
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable : 26812)
+#endif
+typedef enum {
+  FAST_LOCK_UNLOCKED = 0,
+  FAST_LOCK_LOCKED = 1,
+  FAST_LOCK_CONTENDED = 2,
+} fast_lock_state;
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
+
+#ifdef _WIN32
+_Static_assert(sizeof(LONG) == 4, "fast_lock requires a 32-bit Windows LONG");
+#elif defined(__linux__)
+_Static_assert(sizeof(int) == 4,
+               "fast_lock requires a 32-bit Linux futex word");
+#endif
 
 void fast_lock_acquire(fast_lock *lk) TSA_NO_THREAD_SAFETY_ANALYSIS {
 #ifdef _WIN32
-  int expected = 0;
-  if (atomic_compare_exchange_strong_explicit(
-          &lk->state, &expected, 1, memory_order_acquire, memory_order_relaxed))
+  fast_lock_state state = InterlockedCompareExchange(
+      &lk->state, FAST_LOCK_LOCKED, FAST_LOCK_UNLOCKED);
+  if (state == FAST_LOCK_UNLOCKED)
     return;
   while (true) {
-    if (expected == 2 ||
-        (expected == 1 && atomic_compare_exchange_strong_explicit(
-                              &lk->state, &expected, 2, memory_order_relaxed,
-                              memory_order_relaxed))) {
-      int cmp = 2;
-      WaitOnAddress((volatile void *)&lk->state, &cmp, sizeof(int), INFINITE);
+    if (state == FAST_LOCK_CONTENDED ||
+        (state == FAST_LOCK_LOCKED &&
+         InterlockedCompareExchange(&lk->state, FAST_LOCK_CONTENDED,
+                                    FAST_LOCK_LOCKED) != FAST_LOCK_UNLOCKED)) {
+      fast_lock_state compare = FAST_LOCK_CONTENDED;
+      (void)WaitOnAddress(&lk->state, &compare, sizeof(compare), INFINITE);
     }
-    expected = 0;
-    if (atomic_compare_exchange_strong_explicit(&lk->state, &expected, 2,
-                                                memory_order_acquire,
-                                                memory_order_relaxed))
+    state = InterlockedCompareExchange(&lk->state, FAST_LOCK_CONTENDED,
+                                       FAST_LOCK_UNLOCKED);
+    if (state == FAST_LOCK_UNLOCKED)
       return;
   }
 #elifdef __APPLE__
   os_unfair_lock_lock(&lk->inner);
 #elifdef __linux__
-  int expected = 0;
-  if (atomic_compare_exchange_strong_explicit(
-          &lk->state, &expected, 1, memory_order_acquire, memory_order_relaxed))
+  fast_lock_state expected = FAST_LOCK_UNLOCKED;
+  if (__atomic_compare_exchange_n(&lk->state, &expected, FAST_LOCK_LOCKED,
+                                  false, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED))
     return;
   while (true) {
-    if (expected == 2 ||
-        (expected == 1 && atomic_compare_exchange_strong_explicit(
-                              &lk->state, &expected, 2, memory_order_relaxed,
-                              memory_order_relaxed))) {
-      syscall(SYS_futex, &lk->state, FUTEX_WAIT | FUTEX_PRIVATE_FLAG, 2, NULL,
-              NULL, 0);
+    if (expected == FAST_LOCK_CONTENDED ||
+        (expected == FAST_LOCK_LOCKED &&
+         __atomic_compare_exchange_n(&lk->state, &expected, FAST_LOCK_CONTENDED,
+                                     false, __ATOMIC_RELAXED,
+                                     __ATOMIC_RELAXED))) {
+      (void)syscall(SYS_futex, &lk->state, FUTEX_WAIT | FUTEX_PRIVATE_FLAG,
+                    FAST_LOCK_CONTENDED, NULL, NULL, 0);
     }
-    expected = 0;
-    if (atomic_compare_exchange_strong_explicit(&lk->state, &expected, 2,
-                                                memory_order_acquire,
-                                                memory_order_relaxed))
+    expected = FAST_LOCK_UNLOCKED;
+    if (__atomic_compare_exchange_n(&lk->state, &expected, FAST_LOCK_CONTENDED,
+                                    false, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED))
       return;
   }
 #else
-  pthread_mutex_lock(&lk->inner);
+  (void)pthread_mutex_lock(&lk->inner);
 #endif
 }
 
 void fast_lock_release(fast_lock *lk) TSA_NO_THREAD_SAFETY_ANALYSIS {
 #ifdef _WIN32
-  if (atomic_fetch_sub_explicit(&lk->state, 1, memory_order_release) != 1) {
-    atomic_store_explicit(&lk->state, 0, memory_order_release);
-    WakeByAddressSingle((void *)&lk->state);
-  }
-#elifdef __APPLE__
+  const fast_lock_state previous =
+      InterlockedExchange(&lk->state, FAST_LOCK_UNLOCKED);
+  if (previous == FAST_LOCK_CONTENDED)
+    WakeByAddressSingle(&lk->state);
+#elif defined(__APPLE__)
   os_unfair_lock_unlock(&lk->inner);
-#elifdef __linux__
-  if (atomic_fetch_sub_explicit(&lk->state, 1, memory_order_release) != 1) {
-    atomic_store_explicit(&lk->state, 0, memory_order_release);
-    syscall(SYS_futex, &lk->state, FUTEX_WAKE | FUTEX_PRIVATE_FLAG, 1, NULL,
-            NULL, 0);
+#elif defined(__linux__)
+  const fast_lock_state previous =
+      __atomic_exchange_n(&lk->state, FAST_LOCK_UNLOCKED, __ATOMIC_RELEASE);
+  if (previous == FAST_LOCK_CONTENDED) {
+    (void)syscall(SYS_futex, &lk->state, FUTEX_WAKE | FUTEX_PRIVATE_FLAG, 1,
+                  NULL, NULL, 0);
   }
 #else
-  pthread_mutex_unlock(&lk->inner);
+  (void)pthread_mutex_unlock(&lk->inner);
 #endif
 }

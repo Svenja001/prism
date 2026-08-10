@@ -2,27 +2,22 @@
 
 #ifndef FAST_LOCK_H
 #define FAST_LOCK_H
-
-#include <stdatomic.h>
+#include "thread_safety.h"
 #ifdef _WIN32
 #include <windows.h>
-#elif defined(__APPLE__)
+#elifdef __APPLE__
 #include <os/lock.h>
-#elif defined(__linux__)
-#include <limits.h>
-#include <linux/futex.h>
-#include <sys/syscall.h>
-#include <unistd.h>
-#else
+#elifndef __linux__
 #include <pthread.h>
 #endif
-#include "thread_safety.h"
 
 typedef struct TSA_CAPABILITY("mutex") fast_lock {
-#if defined(_WIN32) || defined(__linux__)
-  atomic_int state;
-#elif defined(__APPLE__)
+#ifdef _WIN32
+  _Alignas(4) LONG state;
+#elifdef __APPLE__
   os_unfair_lock inner;
+#elifdef __linux__
+  _Alignas(4) int state;
 #else
   pthread_mutex_t inner;
 #endif
