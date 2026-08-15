@@ -327,18 +327,21 @@ public:
   BackendResult<> stop() override {
     if (!initialized.test())
       return std::unexpected(BackendError::NotInitialized);
-    sync_on_main(^{
 #if TARGET_OS_WATCH
-#elif TARGET_OS_OSX
+    return std::unexpected(BackendError::NotImplemented);
+#else
+    sync_on_main(^{
+#if TARGET_OS_OSX
       cancel_debounce();
       [pending_text setString:@""];
       (void)try_invoke_legacy_handler(@"voStop", nil);
 #else
-      [queue removeAllObjects];
-      is_speaking_flag = false;
+    [queue removeAllObjects];
+    is_speaking_flag = false;
 #endif
     });
     return {};
+#endif
   }
 
 private:
