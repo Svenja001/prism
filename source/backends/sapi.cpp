@@ -278,6 +278,8 @@ private:
       if (FAILED(hr) || read != bytes)
         return std::unexpected(BackendError::InternalBackendError);
       flags |= SPF_IS_XML;
+    } else {
+      flags |= SPF_IS_NOT_XML;
     }
     return SapiSpeakParams{.text = std::move(wtext), .flags = flags};
   }
