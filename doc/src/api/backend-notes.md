@@ -66,7 +66,7 @@ The backend captures the qualifying window at initialization and does not rebind
 
 The NVDA backend communicates with NVDA through a local RPC endpoint whose name is keyed by the user's logon session identifier and the calling thread's desktop name. NVDA MUST therefore be running in the same logon session and on the same desktop as the calling thread. Cross-session and cross-desktop announcements are not supported.
 
-The endpoint binding established at initialization is fixed for the lifetime of the backend instance and is never retried. If NVDA terminates after a successful initialization, subsequent operations return `PRISM_ERROR_BACKEND_NOT_AVAILABLE`. The backend does not automatically reconnect when NVDA is restarted; applications SHOULD destroy and re-create the backend.
+The endpoint binding established at initialization is fixed for the lifetime of the backend instance and is never retried. If NVDA terminates after a successful initialization, subsequent operations return `PRISM_ERROR_INTERNAL`. The backend does not automatically reconnect when NVDA is restarted; applications SHOULD destroy and re-create the backend.
 
 ### JAWS
 
