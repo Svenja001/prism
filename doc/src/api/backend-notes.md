@@ -33,9 +33,15 @@ The backend has two delivery mechanisms for announcements: a legacy automation p
 * The helper script does not compile during initialization; or
 * The first Apple event, sent at the first speech request, is rejected because automation has not been permitted. This is the case both when the user denies the prompt and when the host process cannot request automation access at all, such as when it is not packaged as an application bundle or supplies no `NSAppleEventsUsageDescription`.
 
-#### iOS, iPadOS, tvOS, and visionOS
+#### iOS, iPadOS, MacCatalyst, tvOS, and visionOS
 
 The host process MUST be a fully initialized application of the platform's standard application kind, with an active main run loop. Any process that uses `UIApplicationMain` or the SwiftUI `@main` entry point satisfies this requirement.
+
+#### WatchOS
+
+On watchOS, the VoiceOver backend requires watchOS 10.0 or later and is available only while VoiceOver is running. Initialization returns PRISM_ERROR_BACKEND_NOT_AVAILABLE if either requirement is not satisfied.
+
+The watchOS VoiceOver backend supports the speak and output operations. No other operations are supported at this time.
 
 ### UIA
 
@@ -94,11 +100,11 @@ The Boy PC Reader backend communicates with Boy PC Reader through a client libra
 
 ### SystemAccess
 
-The System Access backend is a legacy backend. In addition to `PRISM_ENABLE_LEGACY_BACKENDS`, source builds that wish to include it MUST set `PRISM_ENABLE_SYSTEM_ACCESS_BACKEND`. No other requirements are imposed.
+The System Access backend is a legacy backend. No other requirements are imposed.
 
 ### WindowEyes
 
-The Window Eyes backend is a legacy backend. In addition to `PRISM_ENABLE_LEGACY_BACKENDS`, source builds that wish to include it MUST set `PRISM_ENABLE_WINDOW_EYES_BACKEND`. The backend communicates with WindowEyes through a COM interface registered by the WindowEyes installer. The host process MUST be running on Windows, and the COM interface MUST be registered on the system; if it is not, `prism_backend_initialize` returns `PRISM_ERROR_BACKEND_NOT_AVAILABLE`.
+The Window Eyes backend is a legacy backend. The backend communicates with WindowEyes through a COM interface registered by the WindowEyes installer. The host process MUST be running on Windows, and the COM interface MUST be registered on the system; if it is not, `prism_backend_initialize` returns `PRISM_ERROR_BACKEND_NOT_AVAILABLE`.
 
 ### Speech Dispatcher
 
@@ -124,7 +130,7 @@ The backend supports two variants of the Orca remote-control interface, the curr
 
 The Spiel backend is registered on Linux and BSD builds and communicates with Spiel speech providers through the session bus. The backend does not itself synthesize audio; synthesis is performed by whichever speech provider handles the utterance.
 
-The runtime-supported probe requires that the session bus be available to the host process and that at least one Spiel speech provider be reachable on it. Headless environments and minimal SSH sessions that do not provide a session bus do not satisfy this requirement.
+The runtime-supported probe requires a session D-Bus connection and at least one currently owned or activatable D-Bus service whose name ends in `.Speech.Provider`. Initialization will require that any speech providers be genuinely reachable. Headless environments and minimal SSH sessions that do not provide a session bus do not satisfy this requirement.
 
 A single Spiel voice that declares support for multiple languages appears in the backend's voice list as one entry per language, sharing the same name but with distinct language strings. The voice index selected through `prism_backend_set_voice` therefore identifies a `(voice, language)` pair, not a voice alone.
 
