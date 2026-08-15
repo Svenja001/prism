@@ -45,7 +45,7 @@ error_status_t __stdcall nvdaController_setOnSsmlMarkReachedCallback(
 
 class NvdaBackend final : public TextToSpeechBackend {
 private:
-  handle_t controller_handle;
+  handle_t controller_handle{nullptr};
   std::atomic_flag supports_is_speaking;
 
   static bool server_supports_interface(handle_t binding,
@@ -145,6 +145,7 @@ public:
       return std::unexpected(BackendError::BackendNotAvailable);
     const std::wstring desktop_ns = fmt::format(_T("{}.{}"), sid, desktop_name);
     RPC_STATUS status;
+    handle_t binding = nullptr;
     const auto endpoint = fmt::format(_T("NvdaCtlr.{}"), desktop_ns);
     RPC_WSTR string_binding = nullptr;
     status = RpcStringBindingCompose(
@@ -155,20 +156,22 @@ public:
         nullptr, &string_binding);
     if (status != RPC_S_OK)
       return std::unexpected(BackendError::BackendNotAvailable);
-    status = RpcBindingFromStringBinding(string_binding, &controller_handle);
+    status = RpcBindingFromStringBinding(string_binding, &binding);
     RpcStringFree(&string_binding);
     if (status != RPC_S_OK) {
       return std::unexpected(BackendError::BackendNotAvailable);
     }
-    if (nvdaController_testIfRunning(controller_handle) != ERROR_SUCCESS ||
+    if (nvdaController_testIfRunning(binding) != ERROR_SUCCESS ||
         !server_supports_interface(
-            controller_handle, nvdaController_NvdaController_v1_0_c_ifspec)) {
+            binding, nvdaController_NvdaController_v1_0_c_ifspec)) {
+      RpcBindingFree(&binding);
       return std::unexpected(BackendError::BackendNotAvailable);
     }
     if (server_supports_interface(
-            controller_handle, nvdaController_NvdaController3_v1_0_c_ifspec)) {
+            binding, nvdaController_NvdaController3_v1_0_c_ifspec)) {
       supports_is_speaking.test_and_set();
     }
+    controller_handle = binding;
     return {};
   }
 
