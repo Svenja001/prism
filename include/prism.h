@@ -519,6 +519,10 @@ PRISM_API void PRISM_CALL prism_log_flush(void);
 
 PRISM_API void PRISM_CALL prism_log_shutdown(void);
 
+PRISM_API PRISM_NODISCARD uint32_t PRISM_CALL prism_version(void);
+
+PRISM_API PRISM_NODISCARD const char *PRISM_CALL prism_version_string(void);
+
 #if defined(__cplusplus)
 }
 #endif

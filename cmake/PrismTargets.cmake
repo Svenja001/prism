@@ -70,6 +70,10 @@ target_include_directories(
 target_compile_definitions(
   prism
   PRIVATE PRISM_BUILDING
+          PRISM_VERSION_MAJOR=${PROJECT_VERSION_MAJOR}
+          PRISM_VERSION_MINOR=${PROJECT_VERSION_MINOR}
+          PRISM_VERSION_PATCH=${PROJECT_VERSION_PATCH}
+          PRISM_VERSION_STRING="${PROJECT_VERSION}"
   PUBLIC ${PRISM_PUBLIC_DEFINES})
 set_target_properties(
   prism
