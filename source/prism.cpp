@@ -86,7 +86,6 @@ static_assert(PRISM_VERSION_PATCH <= UINT8_MAX);
 
 inline constexpr auto version = encode_version(
     PRISM_VERSION_MAJOR, PRISM_VERSION_MINOR, PRISM_VERSION_PATCH);
-inline constexpr char version_string[] = PRISM_VERSION_STRING;
 
 extern "C" {
 
@@ -609,6 +608,6 @@ PRISM_API PRISM_NODISCARD uint32_t PRISM_CALL prism_version(void) {
 }
 
 PRISM_API PRISM_NODISCARD const char *PRISM_CALL prism_version_string(void) {
-  return version_string;
+  return PRISM_VERSION_STRING;
 }
 }
