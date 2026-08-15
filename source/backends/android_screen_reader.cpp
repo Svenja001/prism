@@ -63,7 +63,7 @@ public:
         return {};
       }
       auto *cls =
-          env->FindClass("com/github/ethindp/prism/AndroidTextToSpeechBackend");
+          env->FindClass("com/github/ethindp/prism/AndroidScreenReaderBackend");
       if (cls == nullptr) {
         if (env->ExceptionCheck() != 0)
           env->ExceptionClear();
